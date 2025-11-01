@@ -1,0 +1,18 @@
+{
+  "title": "RCM Analytics",
+  "timezone": "browser",
+  "annotations": {"list":[]},
+  "panels": [
+    {
+      "type": "stat",
+      "title": "API req rate (/v1/analytics/rcm)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{
+        "expr": "sum(rate(http_requests_total{handler=\"/v1/analytics/rcm\"}[5m]))"
+      }],
+      "gridPos": {"x":0,"y":0,"w":12,"h":8}
+    }
+  ],
+  "schemaVersion": 38,
+  "version": 1
+}

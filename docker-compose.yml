@@ -1,0 +1,199 @@
+#version: "3.9"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-health}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-health}
+      POSTGRES_DB: ${POSTGRES_DB:-health}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-health} -d ${POSTGRES_DB:-health}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - appnet
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "PING"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - appnet
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio12345
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc --version >/dev/null 2>&1 || true; curl -sf http://localhost:9000/minio/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks:
+      - appnet
+
+  ehr-connector:
+    build: ./services/ehr-connector
+    restart: unless-stopped
+    ports:
+      - "8100:8100"
+    networks:
+      - appnet
+
+  signature-adapter:
+    build: ./services/signature-adapter
+    restart: unless-stopped
+    ports:
+      - "8200:8200"
+    networks:
+      - appnet
+
+  billing-adapter:
+    build:
+      context: ./services/billing-adapter
+      dockerfile: Dockerfile
+    # image: mock-billing-adapter   # (optional) tag if you also push to a registry
+    restart: unless-stopped
+    # EXTERNAL host 9200 -> container 9000 (avoid MinIO's 9000)
+    ports:
+      - "9200:9000"
+    command: uvicorn main:app --host 0.0.0.0 --port 9000
+    healthcheck:
+      # use Python (always present) to avoid curl/wget availability issues
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9000/health').getcode()==200 else 1)\"",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+    depends_on:
+      - redis
+    networks:
+      - appnet
+
+  api:
+    build: ./apps/api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      BILLING_ADAPTER_URL: http://billing-adapter:9000
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      # DATABASE_URL typically comes from .env; if not, uncomment:
+      # DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-health}:${POSTGRES_PASSWORD:-health}@postgres:5432/${POSTGRES_DB:-health}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      ehr-connector:
+        condition: service_started
+      signature-adapter:
+        condition: service_started
+      billing-adapter:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./apps/api:/code/app
+      - ./apps/api/alembic:/code/app/alembic
+    networks:
+      - appnet
+
+  worker:
+    build: ./apps/api
+    working_dir: /code/app
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      BILLING_ADAPTER_URL: http://billing-adapter:9000
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-health}:${POSTGRES_PASSWORD:-health}@postgres:5432/${POSTGRES_DB:-health}
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+      billing-adapter:
+        condition: service_healthy
+    command: >
+      celery -A app.celery_app:celery_app worker
+      -l info -Q default --without-gossip --without-mingle --without-heartbeat
+    volumes:
+      - ./apps/api:/code/app
+    networks:
+      - appnet
+
+  web:
+    build: ./apps/web
+    restart: unless-stopped
+    environment:
+      VITE_API_BASE: http://localhost:8000
+    ports:
+      - "5173:5173"
+    depends_on:
+      api:
+        condition: service_started
+    networks:
+      - appnet
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - appnet
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning/:/etc/grafana/provisioning
+      - graf:/var/lib/grafana
+    networks:
+      - appnet
+
+networks:
+  appnet: {}
+
+volumes:
+  pg: {}
+  minio: {}
+  graf: {}
+  pgadmin_data: {}

@@ -1,0 +1,26 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Validate requirements
+        run: |
+          pip install pyyaml jsonschema
+          python scripts/validate_requirements.py
+      - name: API deps
+        run: |
+          pip install -r apps/api/requirements.txt
+      - name: Test API
+        run: |
+          pytest -q apps/api/tests
+      - name: Build images
+        run: |
+          docker build -t healthcare-api:ci ./apps/api
+          docker build -t healthcare-web:ci ./apps/web

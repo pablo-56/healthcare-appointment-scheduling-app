@@ -1,0 +1,7 @@
+__pycache__/
+.alembic/
+.venv/
+*.pyc
+dist/
+build/
+node_modules/

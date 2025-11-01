@@ -1,0 +1,27 @@
+version: 1
+service: healthcare-app
+owners: ['platform@yourclinic.ca','privacy@yourclinic.ca']
+requirements:
+  - id: PRIV-POU-001
+    area: privacy
+    title: Purpose-of-use header
+    severity: high
+    evidence: ['apps/api/app/middleware/purpose_of_use.py']
+
+    - id: AUD-BOOK-001
+    area: audit
+    title: Appointment booking is audited
+    severity: high
+    evidence:
+      - apps/api/alembic/versions/0002_phase1_appointments_audit.py
+      - apps/api/app/routers/appointments.py
+      
+  - id: INT-FHIR-001
+    area: interoperability
+    title: FHIR Appointment.create integration
+    severity: medium
+    evidence:
+      - services/ehr-connector/main.py
+      - apps/api/app/routers/appointments.py
+
+slo: { booking_p95_ms: 500 }

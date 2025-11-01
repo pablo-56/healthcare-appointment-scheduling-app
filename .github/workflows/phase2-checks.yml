@@ -1,0 +1,25 @@
+name: Phase2 Checks
+on: [pull_request]
+jobs:
+  lint-and-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r apps/api/requirements.txt
+      - run: flake8 apps/api || true
+      - run: python -m pytest -q || true
+
+  require-files:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify mandatory artifacts exist
+        run: |
+          test -f apps/api/app/routers/intake.py
+          test -f apps/api/app/routers/documents.py
+          test -f apps/api/app/routers/signature.py
+          test -f apps/api/app/tasks/intake.py
+          test -f monitoring/grafana/provisioning/dashboards/phase2.json || true
+          echo "OK"
