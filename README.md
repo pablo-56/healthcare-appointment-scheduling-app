@@ -4,7 +4,7 @@ AI agents can streamline appointment scheduling and management, assist with pati
 
 One-liner
 
-Agent-first Healthcare OS (FastAPI + React + FHIR): 11-phase MVP that automates booking, intake, e-consent, pre-charting, check-in, ambient scribe (HITL), RCM, compliance, and Phase-11 analytics with A/B testing.
+Agent-first Healthcare OS (FastAPI + React + FHIR):  MVP that automates booking, intake, e-consent, pre-charting, check-in, ambient scribe (HITL), RCM, compliance, and analytics with A/B testing.
 
 Why it matters
 
