@@ -1,64 +1,74 @@
-// apps/web/src/pages/BillingClaim.tsx
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, Link } from "react-router-dom";
+import { api } from "../lib/fetcher";
 
 /**
- * Claim detail page with a "Submit" button. Uses PAYMENT PoU.
+ * Claim detail page.
+ * - GET /v1/billing/claims/:id
+ * - Submit/Resubmit -> POST /v1/billing/claims/:id/submit
+ * - If payer denies (later via mock 835), show Edit Codes link back to Scribe.
  */
 export default function BillingClaim() {
   const { id } = useParams();
-  const [rec, setRec] = useState<any>(null);
-  const [err, setErr] = useState<string>("");
+  const [claim, setClaim] = useState<any>(null);
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
 
   async function load() {
-    setErr("");
+    setMsg("");
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_BASE}/v1/claims/${id}`, {
-        headers: { "X-Purpose-Of-Use": "PAYMENT" },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-      setRec(await res.json());
-    } catch (e: any) {
-      setErr(String(e));
+      const data = await api(`/v1/billing/claims/${id}`, { method: "GET", pou: "PAYMENT" });
+      setClaim(data);
+    } catch (e:any) {
+      setMsg(e.message || "Failed to load claim");
     }
   }
-
   useEffect(() => { load(); }, [id]);
 
   async function submit() {
-    setErr("");
+    if (!id) return;
+    setBusy(true);
+    setMsg("");
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_BASE}/v1/claims/${id}/submit`, {
-        method: "POST",
-        headers: { "X-Purpose-Of-Use": "PAYMENT" },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+      const res = await api(`/v1/billing/claims/${id}/submit`, { method: "POST", pou: "PAYMENT" });
+      setMsg(`Submitted. Payer ref: ${res.payer_ref}`);
       await load();
-    } catch (e: any) {
-      setErr(String(e));
+    } catch (e:any) {
+      setMsg(e.message || "Submit failed");
+    } finally {
+      setBusy(false);
     }
   }
 
-  if (!rec) return <div className="p-6">Loading… {err && <span className="text-red-400 ml-2">{err}</span>}</div>;
+  const apptId = claim?.appointment_id;
 
   return (
-    <div className="p-6 space-y-4">
-      <h1 className="text-2xl font-semibold">Claim #{rec.id}</h1>
-      {err && <div className="text-red-400">Error: {err}</div>}
-      <div className="space-y-1">
-        <div><b>Status:</b> {rec.status}</div>
-        <div><b>Encounter:</b> {rec.encounter_id}</div>
-        <div><b>Payer Ref:</b> {rec.payer_ref || "—"}</div>
-        <div><b>Total:</b> ${((rec.total_cents || 0) / 100).toFixed(2)}</div>
-        <div className="mt-2">
-          <button onClick={submit} className="px-3 py-2 rounded bg-blue-600 hover:bg-blue-700">
-            Submit to clearinghouse
-          </button>
-        </div>
-      </div>
-      <pre className="text-xs bg-black/30 p-3 rounded overflow-auto">
-        {JSON.stringify(rec.payload_json, null, 2)}
-      </pre>
+    <div className="p-6 space-y-3">
+      <h1 className="text-2xl font-semibold">Claim #{id}</h1>
+      {msg && <div className="text-sm">{msg}</div>}
+
+      {!claim ? (
+        <div className="text-gray-500">Loading…</div>
+      ) : (
+        <>
+          <div className="text-sm">Status: <b>{claim.status}</b></div>
+          {claim.payer_ref && <div className="text-sm">Payer ref: {claim.payer_ref}</div>}
+          <pre className="text-xs border rounded p-3 bg-white overflow-auto">
+            {JSON.stringify(claim, null, 2)}
+          </pre>
+
+          <div className="flex gap-2">
+            <button onClick={submit} disabled={busy} className="border px-3 py-1">
+              {busy ? "Submitting…" : (claim.status === "NEW" ? "Submit" : "Resubmit")}
+            </button>
+            {/* If denied/rejected, make it easy to go edit codes (via Scribe for demo) */}
+            {(claim.status === "DENIED" || claim.status === "REJECTED") && apptId && (
+              <Link to={`/provider/scribe/${apptId}`} className="border px-3 py-1">Edit codes</Link>
+            )}
+            <Link to="/billing/cases" className="border px-3 py-1">Back</Link>
+          </div>
+        </>
+      )}
     </div>
   );
 }

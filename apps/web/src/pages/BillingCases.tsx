@@ -1,63 +1,57 @@
-// apps/web/src/pages/BillingCases.tsx
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { api } from "../lib/fetcher";
+
+type Case = { id: number; encounter_id: string; appointment_id?: number; status: string; total_cents?: number; updated_at?: string };
 
 /**
- * Simple worklist that queries /v1/coding/cases (PAYMENT/OPERATIONS).
- * Shows NEW/SUBMITTED/DENIED/REJECTED; PAID is hidden.
+ * Worklist for coders/billers.
+ * - GET /v1/billing/cases
+ * - Click → /billing/claims/:id
+ * - If empty: show "No active cases"
  */
 export default function BillingCases() {
-  const [items, setItems] = useState<any[]>([]);
-  const [err, setErr] = useState<string>("");
+  const [items, setItems] = useState<Case[]>([]);
+  const [err, setErr] = useState("");
+  const nav = useNavigate();
 
-  useEffect(() => {
-    const run = async () => {
-      setErr("");
-      try {
-        const res = await fetch(`${import.meta.env.VITE_API_BASE}/v1/coding/cases`, {
-          headers: { "X-Purpose-Of-Use": "PAYMENT" },
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-        const js = await res.json();
-        setItems(js.items || []);
-      } catch (e: any) {
-        setErr(String(e));
-      }
-    };
-    run();
-  }, []);
+  async function load() {
+    setErr("");
+    try {
+      // Use PoU PAYMENT/OPERATIONS for revenue-cycle pages
+      const data = await api("/v1/billing/cases", { method: "GET", pou: "OPERATIONS" });
+      setItems(data?.items || []);
+    } catch (e:any) {
+      setErr(e.message || "Failed to load cases");
+    }
+  }
+  useEffect(() => { load(); }, []);
 
   return (
-    <div className="p-6 space-y-4">
-      <h1 className="text-2xl font-semibold">Billing Worklist</h1>
-      {err && <div className="text-red-400">Error: {err}</div>}
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="text-left border-b border-neutral-700">
-            <th className="py-2">ID</th>
-            <th>Encounter</th>
-            <th>Status</th>
-            <th>Total</th>
-            <th>Updated</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((r) => (
-            <tr key={r.id} className="border-b border-neutral-800">
-              <td className="py-2">
-                <Link className="underline" to={`/billing/claims/${r.id}`}>#{r.id}</Link>
-              </td>
-              <td>{r.encounter_id}</td>
-              <td>{r.status}</td>
-              <td>${((r.total_cents || 0) / 100).toFixed(2)}</td>
-              <td>{new Date(r.updated_at).toLocaleString()}</td>
-            </tr>
-          ))}
-          {items.length === 0 && (
-            <tr><td className="py-6" colSpan={5}>No open cases.</td></tr>
-          )}
-        </tbody>
-      </table>
+    <div className="p-6">
+      <h1 className="text-2xl font-semibold mb-3">Billing Cases</h1>
+      {err && <div className="text-red-600 text-sm mb-2">{err}</div>}
+
+      {!items.length && <div className="text-gray-500">No active cases</div>}
+
+      <ul className="space-y-2">
+        {items.map(c => (
+          <li
+            key={c.id}
+            className="border rounded p-2 bg-white cursor-pointer hover:bg-gray-50"
+            onClick={() => nav(`/billing/claims/${c.id}`)}
+          >
+            <div className="font-medium">Case #{c.id} — {c.status}</div>
+            <div className="text-xs text-gray-500">
+              {c.encounter_id} • {c.total_cents ? `$${(c.total_cents/100).toFixed(2)}` : "—"} {c.updated_at ? `• ${new Date(c.updated_at).toLocaleString()}` : ""}
+            </div>
+          </li>
+        ))}
+      </ul>
+
+      <div className="mt-4">
+        <Link to="/" className="underline">Home</Link>
+      </div>
     </div>
   );
 }

@@ -1,110 +1,98 @@
-// apps/web/src/pages/Scribe.tsx
-import { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useState } from "react";
+import { useParams, Link, useNavigate } from "react-router-dom";
+import { api } from "../lib/fetcher";
 
-const API_BASE = import.meta.env.VITE_API_BASE;
-
+/**
+ * In-room Scribe for a specific appointment.
+ * - Start -> POST /v1/scribe/sessions { appointment_id }
+ * - Always keep a manual draft text area enabled (even if audio/LLM fails).
+ * - Approve -> POST /v1/scribe/sessions/:sessionId/approve
+ * - On approve: show buttons to Summary and Billing cases.
+ */
 export default function ScribePage() {
   const { appointmentId } = useParams();
-  const apptId = useMemo(() => Number(appointmentId), [appointmentId]);
-
+  const aid = Number(appointmentId || 0);
   const [sessionId, setSessionId] = useState<number | null>(null);
-  const [draft, setDraft] = useState<string>("");
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string>("");
+  const [draft, setDraft] = useState<string>("");              // manual-friendly
+  const [err, setErr] = useState("");
+  const [approved, setApproved] = useState(false);
+  const nav = useNavigate();
 
-  async function startSession() {
+  async function start() {
     setErr("");
-    setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/v1/scribe/sessions`, {
+      const r = await api("/v1/scribe/sessions", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Purpose-Of-Use": "TREATMENT", // REQUIRED by backend
-        },
-        body: JSON.stringify({ appointment_id: apptId }),
+        body: JSON.stringify({ appointment_id: aid }),
+        pou: "TREATMENT",
       });
-      if (!res.ok) {
-        const t = await res.text();
-        throw new Error(`HTTP ${res.status}: ${t}`);
-      }
-      const data = await res.json();
-      setSessionId(data.session_id);
-      setDraft(data.draft || "");
-    } catch (e: any) {
-      setErr(e.message || String(e));
-    } finally {
-      setLoading(false);
+      setSessionId(r.session_id);
+      // Use server draft if present, otherwise keep any local edits
+      setDraft((d) => (d?.trim()?.length ? d : (r.draft || "Draft ready")));
+    } catch (e:any) {
+      // Audio/stream/model failures should NOT block manual note: keep the text area enabled
+      setErr(e.message || "Could not start scribe. Manual note entry enabled.");
+      if (!draft) setDraft("Manual note. Audio/stream temporarily unavailable.");
     }
   }
 
   async function approve() {
-    if (!sessionId) return;
     setErr("");
-    setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/v1/scribe/sessions/${sessionId}/approve`, {
+      if (!sessionId) throw new Error("Start a scribe session first");
+      // Include the latest draft in approve call (backend can store it or ignore)
+      await api(`/v1/scribe/sessions/${sessionId}/approve`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Purpose-Of-Use": "TREATMENT",
-        },
+        body: JSON.stringify({ draft }),
+        pou: "TREATMENT",
       });
-      if (!res.ok) {
-        const t = await res.text();
-        throw new Error(`HTTP ${res.status}: ${t}`);
-      }
-      // Optionally: toast or navigate
-      alert("Approved & sent to EHR (mock). Coding review task created.");
-    } catch (e: any) {
-      setErr(e.message || String(e));
-    } finally {
-      setLoading(false);
+      setApproved(true);
+    } catch (e:any) {
+      setErr(e.message || "Could not approve note.");
     }
   }
 
-  useEffect(() => {
-    // no-op; page waits for user to click "Start scribe session"
-  }, []);
+  if (!aid) return <div className="p-6 text-red-600">Missing appointment id.</div>;
 
   return (
-    <div className="p-6 space-y-4">
-      <h1 className="text-3xl font-semibold">Ambient Scribe (Appointment #{apptId})</h1>
+    <div className="p-6 space-y-3">
+      <h1 className="text-2xl font-semibold">In-room Scribe (Appt #{aid})</h1>
 
-      <div>
-        <button
-          className="px-4 py-2 rounded bg-blue-600 text-white disabled:opacity-50"
-          onClick={startSession}
-          disabled={loading}
-        >
-          Start scribe session
+      <div className="flex gap-2">
+        <button className="px-3 py-1 border" onClick={start} disabled={!!sessionId}>
+          {sessionId ? `Session #${sessionId}` : "Start"}
         </button>
+        <Link to={`/provider/prechart/${aid}`} className="border px-3 py-1">Pre-chart</Link>
       </div>
 
-      {err ? <p className="text-red-400">Error: {err}</p> : null}
-      {loading ? <p>Loading…</p> : null}
+      {err && <div className="text-red-600 text-sm">{err}</div>}
 
-      {sessionId ? (
-        <div className="space-y-3">
-          <p className="text-sm text-gray-300">Session ID: {sessionId}</p>
-          <textarea
-            className="w-full h-64 p-3 rounded bg-gray-900 border border-gray-700"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-          />
-          <div className="flex gap-3">
-            {/* In a real app you'd persist edits; here we just approve the current draft. */}
-            <button
-              className="px-4 py-2 rounded bg-emerald-600 text-white disabled:opacity-50"
-              onClick={approve}
-              disabled={loading}
-            >
-              Approve & Post to EHR (mock)
-            </button>
-          </div>
+      {/* Manual draft is always available */}
+      <textarea
+        className="w-full border rounded p-2 h-56"
+        placeholder="SOAP note draft…"
+        value={draft}
+        onChange={(e)=>setDraft(e.target.value)}
+      />
+
+      <div className="flex gap-2">
+        <button className="px-3 py-1 border" onClick={approve} disabled={!sessionId || approved}>
+          {approved ? "Approved" : "Approve"}
+        </button>
+        <Link className="px-3 py-1 border" to="/">Home</Link>
+      </div>
+
+      {/* After approve → links to Summary and Billing cases */}
+      {approved && (
+        <div className="space-x-2 mt-3">
+          <button className="border px-3 py-1" onClick={() => nav(`/portal/summary/enc-${aid}`)}>
+            Open Summary
+          </button>
+          <button className="border px-3 py-1" onClick={() => nav("/billing/cases")}>
+            Billing cases
+          </button>
         </div>
-      ) : null}
+      )}
     </div>
   );
 }

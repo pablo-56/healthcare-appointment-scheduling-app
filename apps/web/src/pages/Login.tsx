@@ -1,82 +1,66 @@
-import React, { useState } from 'react'
-
-const API = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
+import { useState } from "react";
+import { useNavigate, useSearchParams, Link } from "react-router-dom";
+import { sendOtp, verifyOtp } from "../lib/api";
 
 export default function Login() {
-    const [email, setEmail] = useState('')
-    const [code, setCode] = useState('')
-    const [token, setToken] = useState<string | undefined>()
-    const [msg, setMsg] = useState<string | undefined>()
+  const [search] = useSearchParams();
+  const next = search.get("next") || "/book";
+  const [identity, setIdentity] = useState("");
+  const [code, setCode] = useState("");
+  const [sent, setSent] = useState(false);
+  const [msg, setMsg] = useState("");
+  const nav = useNavigate();
 
-    const json = (r: Response) => r.json().catch(() => ({}))
-
-    const sendOtp = async () => {
-        setMsg(undefined)
-        const r = await fetch(`${API}/v1/auth/otp:send`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Purpose-Of-Use': 'OPERATIONS',
-            },
-            body: JSON.stringify({ email }),
-        })
-        const data = await json(r)
-        if (!r.ok) {
-            setMsg(`OTP error: ${r.status} ${data?.error || ''}`)
-            return
-        }
-        alert('OTP sent (check API logs or Redis in dev)')
+  async function onSend() {
+    setMsg("");
+    try {
+      await sendOtp(identity);
+      setSent(true);
+      setMsg("Code sent. Check your phone/email.");
+    } catch (e: any) {
+      setMsg(e.message || "Failed to send code");
     }
+  }
 
-    const login = async () => {
-        setMsg(undefined)
-        const r = await fetch(`${API}/v1/sessions`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Purpose-Of-Use': 'OPERATIONS',
-            },
-            body: JSON.stringify({ email, code }),
-        })
-        const data = await json(r)
-        if (!r.ok) {
-            setMsg(`Login failed: ${r.status} ${data?.detail || data?.error || ''}`)
-            return
-        }
-        setToken(data.token)
+  async function onVerify() {
+    setMsg("");
+    try {
+      await verifyOtp(identity, code);
+      nav(next);
+    } catch (e: any) {
+      setMsg(e.message || "Invalid code");
     }
+  }
 
-    return (
-        <div style={{ maxWidth: 420, margin: '40px auto', padding: 20, border: '1px solid #ddd' }}>
-            <h2>Login via OTP</h2>
-
-            <label>Email</label>
+  return (
+    <div className="p-6">
+      <h2 className="text-xl font-semibold mb-2">Login (OTP)</h2>
+      <div className="space-y-2 max-w-md">
+        <input
+          className="border p-2 w-full"
+          placeholder="Phone or email"
+          value={identity}
+          onChange={(e) => setIdentity(e.target.value)}
+        />
+        {!sent ? (
+          <button onClick={onSend} className="border px-3 py-1">Send code</button>
+        ) : (
+          <>
             <input
-                placeholder="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                style={{ width: '100%' }}
+              className="border p-2 w-full"
+              placeholder="Enter code"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
             />
-            <button onClick={sendOtp} disabled={!email}>Send OTP</button>
-
-            <hr />
-
-            <label>Code</label>
-            <input
-                placeholder="6-digit code"
-                value={code}
-                onChange={(e) => setCode(e.target.value)}
-                style={{ width: '100%' }}
-            />
-            <button onClick={login} disabled={!email || !code}>Create Session</button>
-
-            {msg && <p style={{ color: 'crimson' }}>{msg}</p>}
-            {token && (
-                <>
-                    <h3>JWT</h3>
-                    <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{token}</pre>
-                </>
-            )}
-        </div>
-    )
+            <div className="space-x-2">
+              <button onClick={onVerify} className="border px-3 py-1">Verify</button>
+              <button onClick={onSend} className="border px-3 py-1">Resend</button>
+            </div>
+          </>
+        )}
+        {msg && <p className="text-sm text-gray-400">{msg}</p>}
+        <p className="text-sm">Back to <Link className="underline" to="/">Home</Link></p>
+      </div>
+    </div>
+  );
 }

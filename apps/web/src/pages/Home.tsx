@@ -1,15 +1,14 @@
-import React from 'react'
+import { Link } from "react-router-dom";
 
 export default function Home() {
-    return (
-        <div style={{ padding: 20 }}>
-            <h1>Healthcare App — Dev Home</h1>
-            <ul>
-                <li><a href="/login">Login (OTP)</a></li>
-                <li><a href="http://localhost:8000/docs" target="_blank">API Docs</a></li>
-                <li><a href="http://localhost:8000/metrics" target="_blank">/metrics</a></li>
-                <li><a href="http://localhost:3000" target="_blank">Grafana</a></li>
-            </ul>
-        </div>
-    )
+  return (
+    <div className="p-6">
+      <h1 className="text-2xl font-semibold mb-4">Welcome</h1>
+      <p className="mb-4">Start by <Link to="/book" className="underline">booking</Link> an appointment, or <Link to="/login" className="underline">log in</Link>.</p>
+      <div className="space-x-4">
+        <Link to="/book">Book</Link>
+        <Link to="/login">Login</Link>
+      </div>
+    </div>
+  );
 }

@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     environment: str = Field(default="dev", alias="ENVIRONMENT")
     ehr_base: str = Field(default="http://ehr-connector:8100")
     
-    s3_endpoint: str = Field(default="http://minio:9000", alias="S3_ENDPOINT")
+    s3_endpoint: str = Field(default="http://minio:9001", alias="S3_ENDPOINT")
     s3_region: str = Field(default="us-east-1", alias="S3_REGION")
     s3_access_key: str = Field(default="minio", alias="S3_ACCESS_KEY")
     s3_secret_key: str = Field(default="minio12345", alias="S3_SECRET_KEY")

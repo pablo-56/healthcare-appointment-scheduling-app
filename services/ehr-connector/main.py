@@ -1,4 +1,6 @@
-from fastapi import FastAPI, status
+from fastapi import FastAPI, status, Body
+from datetime import datetime, timedelta, timezone
+import itertools
 from pydantic import BaseModel
 from uuid import uuid4
 from typing import List, Dict, Any
@@ -23,28 +25,63 @@ def ping(): return {'pong': True}
 def schedule():
     return {'resourceType': 'Bundle', 'entry': [{'resource': {'id': 'sched-1', 'actor': [{'display': 'Dr. Mock'}]}}]}
 
-@app.get('/fhir/Slot')
-def slot():
-    return {
-        'resourceType':'Bundle',
-        'entry':[
-            {'resource': {'id':'slot-1','start':'2025-01-01T09:00:00Z','end':'2025-01-01T09:20:00Z'}},
-            {'resource': {'id':'slot-2','start':'2025-01-01T09:20:00Z','end':'2025-01-01T09:40:00Z'}},
-        ]
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+# --- helper to build a tiny Slot bundle (seeded "free" slots for the next hours)
+def _slot_bundle():
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    entries = []
+    # 8 consecutive 30-min free slots
+    for i in range(1, 9):
+        start = now + timedelta(hours=i)
+        end = start + timedelta(minutes=30)
+        entries.append(
+            {"resource": {
+                "resourceType": "Slot",
+                "id": f"slot-{i}",
+                "status": "free",
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+            }}
+        )
+    return {"resourceType": "Bundle", "type": "searchset", "entry": entries}
+
+# Lowercase route (existing)
+@app.get("/fhir/slot")
+def list_slots_lower():
+    return _slot_bundle()
+
+# ✅ Uppercase alias expected by the API
+@app.get("/fhir/Slot")
+def list_slots_upper():
+    return list_slots_lower()
+
+# Return a FHIR Bundle of free slots
+#@app.get("/fhir/Slot")
+
+
+
+# Minimal Appointment.create mock
+_APPTS: Dict[str, Dict[str, Any]] = {}
+
+@app.post("/fhir/Appointment", status_code=201)
+def create_appointment(appt: Dict[str, Any] = Body(...)):
+    """
+    Accepts a minimal Appointment payload. Example:
+    {
+      "status": "booked",
+      "reasonCode": [{"text":"annual physical"}],
+      "start": "2025-11-03T20:00:00Z",
+      "end": "2025-11-03T20:30:00Z",
+      "participant": [{"actor": {"reference":"Patient/123"}}]
     }
-
-class Appointment(BaseModel):
-    resourceType: str = "Appointment"
-    status: str = "booked"
-    start: str
-    end: str
-    reasonCode: List[dict] = []
-    slot: List[dict] = []
-
-@app.post('/fhir/Appointment', status_code=status.HTTP_201_CREATED)
-def create_appt(appt: Appointment):
-    # return minimal FHIR-ish response
-    return {"resourceType":"Appointment","id":"ehr-appt-123","status":appt.status,"start":appt.start,"end":appt.end}
+    """
+    appt_id = f"appt-{len(_APPTS) + 1}"
+    appt = {**appt, "resourceType": "Appointment", "id": appt_id}
+    _APPTS[appt_id] = appt
+    return appt
 
 class FHIRResource(BaseModel):
     resourceType: str
@@ -59,7 +96,7 @@ class FHIRResource(BaseModel):
     #_doc_refs.append(res)
     #return res
 
-app = FastAPI()
+
 
 class DocRef(BaseModel):
     resourceType: str
@@ -72,6 +109,8 @@ class DocRef(BaseModel):
 def document_reference_create(body: DocRef):
     # Mock accept + echo back an id
     return {"resourceType": "DocumentReference", "id": "docref-1", "status": body.status}
+
+# services/ehr-connector/main.py (append this Observation mock endpoints)
 
 class ObservationReq(BaseModel):
     appointment_id: int

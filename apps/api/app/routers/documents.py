@@ -94,28 +94,36 @@ def _data_url(html: str) -> str:
 # List / Get (unchanged, handy for debugging)
 # ---------------------------
 
+# apps/api/app/routers/documents.py  (replace the list endpoint only)
+
 @router.get("/documents")
-def list_documents(limit: int = 20, db: Session = Depends(get_db)):
-    rows = db.execute(
-        text(
-            "SELECT id, patient_id, kind, url, meta, created_at "
-            "FROM documents ORDER BY id DESC LIMIT :n"
-        ),
-        {"n": limit},
-    ).mappings().all()
-    return {"items": [dict(r) for r in rows]}
-
-
-@router.get("/documents/{doc_id}")
-def get_document(doc_id: int = Path(...), db: Session = Depends(get_db)):
-    row = db.execute(
-        text("SELECT id, patient_id, kind, url, meta, created_at FROM documents WHERE id=:id"),
-        {"id": doc_id},
-    ).mappings().first()
-    if not row:
-        raise HTTPException(404, "Document not found")
-    return dict(row)
-
+def list_documents(
+    appointment_id: Optional[int] = Query(default=None),
+    limit: int = Query(default=20),
+    db: Session = Depends(get_db),
+):
+    """
+    If appointment_id is provided, return docs whose meta.appointment_id == :appointment_id.
+    Otherwise return the latest N documents.
+    """
+    if appointment_id:
+        rows = db.execute(
+            text(
+                "SELECT id, patient_id, kind, url, meta, created_at "
+                "FROM documents WHERE (meta->>'appointment_id') = :aid "
+                "ORDER BY id DESC LIMIT :n"
+            ),
+            {"aid": str(appointment_id), "n": limit},
+        ).mappings().all()
+    else:
+        rows = db.execute(
+            text(
+                "SELECT id, patient_id, kind, url, meta, created_at "
+                "FROM documents ORDER BY id DESC LIMIT :n"
+            ),
+            {"n": limit},
+        ).mappings().all()
+    return {"documents": [dict(r) for r in rows]}
 
 # ---------------------------
 # Phase 7: Render Discharge

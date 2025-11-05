@@ -41,12 +41,12 @@ services:
       MINIO_ROOT_USER: minio
       MINIO_ROOT_PASSWORD: minio12345
     ports:
-      - "9000:9000"
+      - "9002:9002"
       - "9001:9001"
     volumes:
       - minio:/data
     healthcheck:
-      test: ["CMD-SHELL", "mc --version >/dev/null 2>&1 || true; curl -sf http://localhost:9000/minio/health/ready"]
+      test: ["CMD-SHELL", "mc --version >/dev/null 2>&1 || true; curl -sf http://localhost:9001/minio/health/ready"]
       interval: 10s
       timeout: 5s
       retries: 20
@@ -65,7 +65,7 @@ services:
     build: ./services/signature-adapter
     restart: unless-stopped
     ports:
-      - "8200:8200"
+      - "9000:9000"
     networks:
       - appnet
 
@@ -77,14 +77,14 @@ services:
     restart: unless-stopped
     # EXTERNAL host 9200 -> container 9000 (avoid MinIO's 9000)
     ports:
-      - "9200:9000"
-    command: uvicorn main:app --host 0.0.0.0 --port 9000
+      - "9200:9200"
+    command: uvicorn main:app --host 0.0.0.0 --port 9200
     healthcheck:
       # use Python (always present) to avoid curl/wget availability issues
       test:
         [
           "CMD-SHELL",
-          "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9000/health').getcode()==200 else 1)\"",
+          "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9200/health').getcode()==200 else 1)\"",
         ]
       interval: 5s
       timeout: 3s
@@ -100,7 +100,7 @@ services:
     env_file:
       - .env
     environment:
-      BILLING_ADAPTER_URL: http://billing-adapter:9000
+      BILLING_ADAPTER_URL: http://billing-adapter:9200
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       # DATABASE_URL typically comes from .env; if not, uncomment:
@@ -134,7 +134,7 @@ services:
     env_file:
       - .env
     environment:
-      BILLING_ADAPTER_URL: http://billing-adapter:9000
+      BILLING_ADAPTER_URL: http://billing-adapter:9200
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-health}:${POSTGRES_PASSWORD:-health}@postgres:5432/${POSTGRES_DB:-health}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
@@ -156,15 +156,18 @@ services:
       - appnet
 
   web:
-    build: ./apps/web
+    build: 
+      context: ./apps/web
+      target: dev 
     restart: unless-stopped
     environment:
       VITE_API_BASE: http://localhost:8000
+      VITE_HMR_HOST: localhost          # ← critical when running inside Docker
+      VITE_HMR_CLIENT_PORT: "5173" 
     ports:
       - "5173:5173"
     depends_on:
-      api:
-        condition: service_started
+      - api  
     networks:
       - appnet
 
@@ -188,6 +191,31 @@ services:
       - graf:/var/lib/grafana
     networks:
       - appnet
+
+
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.47.2-jammy
+    working_dir: /app
+    depends_on:
+      - api
+      - web
+    environment:
+      # these are read by tests and config below
+      API_BASE: http://localhost:8000
+      WEB_BASE: http://localhost:5173
+      CI: "1"
+    volumes:
+      - ./apps/web:/app
+    command: >
+      bash -lc '
+        # wait for API & Web to be ready
+        until curl -sf http://localhost:8000/healthz; do echo "waiting api..."; sleep 1; done
+        until curl -sf http://localhost:5173; do echo "waiting web..."; sleep 1; done
+
+        npm ci || npm i
+        npx playwright install --with-deps
+        npx playwright test
+      '    
 
 networks:
   appnet: {}

@@ -1,16 +1,17 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
-
+import os
 from .otel import setup_tracer
 #from .middleware.purpose_of_use import PurposeOfUseMiddleware
-from .routers import health, auth, sessions, agents, appointments, intake, documents, signature, admin, checkin, ops, prechart, pros, tasks, compliance, analytics
+from .routers import health, auth, sessions, agents, appointments, intake, documents, signature, admin, checkin, ops, prechart, pros, tasks, compliance, analytics, encounters, billing_eligibility, rbac, dev
 from .routers import scribe as scribe_router
 from .routers import billing as billing_router
 
 
 setup_tracer()
 
+WEB_ORIGIN = os.getenv("WEB_ORIGIN", "http://localhost:5173")
 app = FastAPI(title="Healthcare API", version="0.1.0")
 #app.add_middleware(PurposeOfUseMiddleware)
 app.add_middleware(
@@ -39,5 +40,10 @@ app.include_router(pros.router)
 app.include_router(tasks.router)
 app.include_router(compliance.router)
 app.include_router(analytics.router)
+app.include_router(encounters.router)
+app.include_router(billing_eligibility.router)
+app.include_router(rbac.router)
+app.include_router(dev.router)
+
 
 Instrumentator().instrument(app).expose(app)

@@ -321,3 +321,72 @@ def mock_835_ingest(
     payload = {"claim_id": claim_id, "paid_cents": paid_cents, "denial_code": denial_code}
     celery_app.send_task("remits.ingest_835", kwargs={"remit": payload})
     return {"queued": True, "payload": payload}
+
+
+# --- UI compatibility aliases: /v1/billing/cases & /v1/billing/claims/:id ----
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Header
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+import sqlalchemy as sa
+import json, os
+from typing import Optional, Dict, Any
+from ..db import get_db
+from ..middleware.purpose_of_use import require_pou
+
+# Reuse your existing helpers if defined; otherwise define no-op shims:
+def _ensure_claims_table(db: Session):  # alias to your ensure function
+    try:
+        _ensure_claims_schema(db)  # if you have it
+    except NameError:
+        db.execute(text("CREATE TABLE IF NOT EXISTS claims (id SERIAL PRIMARY KEY)"))
+        db.execute(text("ALTER TABLE claims ADD COLUMN IF NOT EXISTS encounter_id TEXT"))
+        db.execute(text("ALTER TABLE claims ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'NEW'"))
+        db.execute(text("ALTER TABLE claims ADD COLUMN IF NOT EXISTS payload_json JSON NOT NULL DEFAULT '{}'::json"))
+        db.commit()
+
+@router.get("/billing/cases", dependencies=[Depends(require_pou({"OPERATIONS","PAYMENT"}))])
+def ui_billing_cases(db: Session = Depends(get_db), limit: int = Query(50, ge=1, le=200)):
+    _ensure_claims_table(db)
+    rows = db.execute(
+        text("""
+          SELECT id, encounter_id, appointment_id, status, payer_ref, total_cents, payload_json, NOW() AS updated_at
+          FROM claims
+          WHERE status IN ('NEW','SUBMITTED','DENIED','REJECTED')
+          ORDER BY id DESC
+          LIMIT :n
+        """),
+        {"n": limit},
+    ).mappings().all()
+    return {"items": [dict(r) for r in rows]}
+
+@router.get("/billing/claims/{claim_id}", dependencies=[Depends(require_pou({"OPERATIONS","PAYMENT"}))])
+def ui_get_claim(claim_id: int = Path(...), db: Session = Depends(get_db)):
+    _ensure_claims_table(db)
+    row = db.execute(text("SELECT * FROM claims WHERE id=:id"), {"id": claim_id}).mappings().first()
+    if not row:
+        raise HTTPException(404, "Claim not found")
+    return dict(row)
+
+@router.post("/billing/claims/{claim_id}/submit", dependencies=[Depends(require_pou({"OPERATIONS","PAYMENT"}))])
+def ui_submit_claim(
+    claim_id: int = Path(...),
+    db: Session = Depends(get_db),
+    x_purpose_of_use: Optional[str] = Header(default=None, convert_underscores=False),
+):
+    # Delegate to your existing submit_claim if present; otherwise inline a minimal version
+    try:
+        # if submit_claim is already defined in this module:
+        return submit_claim(claim_id, db, x_purpose_of_use)  # type: ignore
+    except NameError:
+        # Minimal inline fallback
+        _ensure_claims_table(db)
+        row = db.execute(text("SELECT id, status, payload_json FROM claims WHERE id=:id"), {"id": claim_id}).mappings().first()
+        if not row:
+            raise HTTPException(404, "Claim not found")
+        # Simulate submit
+        db.execute(
+          text("UPDATE claims SET status='SUBMITTED', payer_ref = COALESCE(payer_ref, :ref) WHERE id=:id"),
+          {"id": claim_id, "ref": f"CH-{claim_id}"},
+        )
+        db.commit()
+        return {"id": claim_id, "status": "SUBMITTED", "payer_ref": f"CH-{claim_id}", "simulated": True}

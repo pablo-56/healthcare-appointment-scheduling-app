@@ -1,84 +1,156 @@
-# app/routers/appointments.py
-from fastapi import APIRouter, Depends, Header
-from pydantic import BaseModel, EmailStr
-from sqlalchemy.orm import Session
+# apps/api/app/routers/appointments.py
+from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy import text
-import logging
-
-from ..db import get_db
-from app.utils.audit import audit_safe
-from app.celery_app import celery_app
-
-log = logging.getLogger(__name__)
-
-class AppointmentCreate(BaseModel):
-    patient_email: EmailStr
-    reason: str
-    start: str
-    end: str
-    slot_id: str
-    source_channel: str | None = "web"
-    insurance_number: str | None = None  # Phase 3 input
+from app.db import get_db
+import httpx, os
 
 router = APIRouter(prefix="/v1/appointments", tags=["appointments"])
+EHR = os.getenv("EHR_CONNECTOR_URL", "http://ehr-connector:8100")
 
+# ---------------------------
+# CREATE (already in your repo)
+# ---------------------------
 @router.post("")
-def create_appointment(
-    body: AppointmentCreate,
-    db: Session = Depends(get_db),
-    x_purpose_of_use: str | None = Header(default=None, convert_underscores=False),
-):
-    # Create a mock EHR ID tied to the selected slot
-    fhir_id = f"ehr-appt-{body.slot_id}"
+def create_appointment(payload: dict, db=Depends(get_db)):
+    """
+    Expected payload:
+    {
+      "patient_id": 123,
+      "reason": "annual physical",
+      "start": "...Z",
+      "end": "...Z",
+      "source_channel": "web" | "portal" | "sms" | "admin" | ...
+    }
+    """
+    # 1) Create in EHR mock (returns a FHIR Appointment id)
+    try:
+        appt_fhir = {
+            "status": "booked",
+            "reasonCode": [{"text": payload.get("reason")}],
+            "start": payload.get("start"),
+            "end": payload.get("end"),
+            "participant": [{
+                "actor": {"reference": f"Patient/{payload.get('patient_id','demo')}"}
+            }],
+        }
+        r = httpx.post(f"{EHR}/fhir/Appointment", json=appt_fhir, timeout=5.0)
+        r.raise_for_status()
+        fhir_appt = r.json()
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"EHR error: {e}") from e
 
-    # Persist appointment
+    # 2) Normalize source_channel BEFORE insert
+    src = str(payload.get("source_channel") or "web").lower()
+
+    # 3) Persist locally
     row = db.execute(
-        text(
-            """
-            INSERT INTO appointments (
-                patient_id, start_at, end_at, reason, status, fhir_appointment_id, source_channel, created_at
-            ) VALUES (
-                NULL, :start_at, :end_at, :reason, 'BOOKED', :fhir_id, :src, NOW()
-            ) RETURNING id
-            """
-        ),
+        text("""
+        INSERT INTO appointments
+          (patient_id, reason, start_at, end_at, status, fhir_appointment_id, source_channel)
+        VALUES
+          (:pid, :reason, :start, :end, 'BOOKED', :fhir_id, :src)
+        RETURNING id
+        """),
         {
-            "start_at": body.start,
-            "end_at": body.end,
-            "reason": body.reason,
-            "fhir_id": fhir_id,
-            "src": body.source_channel or "web",
+            "pid": payload.get("patient_id"),
+            "reason": payload.get("reason"),
+            "start": payload.get("start"),
+            "end": payload.get("end"),
+            "fhir_id": fhir_appt.get("id"),
+            "src": src,
         },
     ).first()
-    appt_id = int(row[0])
+
     db.commit()
+    return {"ok": True, "id": row[0], "fhir": fhir_appt}
 
-    # Audit (JSON-safe)
-    audit_safe(
-        db=db,
-        actor=body.patient_email,  # no user object here; use patient email
-        action="APPOINTMENT_BOOKED",
-        target=fhir_id,
-        details={
-            "slot_id": body.slot_id,
-            "source_channel": body.source_channel or "web",
-            "purpose_of_use": x_purpose_of_use,
-        },
-    )
+# ---------------------------
+# READ (new): /v1/appointments/{id}
+# ---------------------------
+@router.get("/{appointment_id}")
+def read_appointment(
+    appointment_id: int,
+    db=Depends(get_db),
+    x_purpose_of_use: str | None = Header(None, alias="X-Purpose-Of-Use")
+):
+    """
+    Fetch a single appointment to render the Confirm page.
+    Allowed PoU: OPERATIONS or TREATMENT (fetcher sends OPERATIONS for GET).
+    """
+    if not x_purpose_of_use or x_purpose_of_use.upper() not in {"OPERATIONS", "TREATMENT"}:
+        # Matches the rest of your PoU style
+        raise HTTPException(status_code=400, detail="Missing X-Purpose-Of-Use header")
 
-    # Fire-and-forget eligibility task
-    try:
-        celery_app.send_task(
-            "eligibility.check_270",
-            kwargs={
-                "appointment_id": appt_id,
-                "patient_email": body.patient_email,
-                "reason": body.reason,
-                "insurance_number": body.insurance_number,
-            },
-        )
-    except Exception:
-        # non-fatal for booking
-        log.exception("failed to enqueue eligibility")
+    row = db.execute(
+        text("""
+        SELECT
+          id, patient_id, reason, start_at, end_at, status,
+          fhir_appointment_id, source_channel, created_at
+        FROM appointments
+        WHERE id = :id
+        """),
+        {"id": appointment_id},
+    ).mappings().first()
 
-    return {"id": appt_id, "fhir_appointment_id": fhir_id, "status": "BOOKED"}
+    if not row:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+
+    return {"appointment": dict(row)}
+
+# ---------------------------
+# UPDATE (OPS/TREATMENT): /v1/appointments/{id}
+# Allows front-desk to flip status to ARRIVED/IN_ROOM/NO_SHOW, etc.
+# ---------------------------
+
+@router.patch("/{appointment_id}")
+def patch_appointment(
+    appointment_id: int,
+    payload: dict,
+    db=Depends(get_db),
+    x_purpose_of_use: str | None = Header(None, alias="X-Purpose-Of-Use"),
+):
+    """
+    Minimal patcher for front-desk ops. Supports fields:
+      - status: BOOKED | ARRIVED | IN_ROOM | COMPLETED | CANCELED | NO_SHOW
+      - reason, start_at, end_at (optional)
+    Note: we keep this tight to avoid accidental wide updates from the UI.
+    """
+    if not x_purpose_of_use or x_purpose_of_use.upper() not in {"OPERATIONS", "TREATMENT"}:
+      raise HTTPException(status_code=400, detail="Missing X-Purpose-Of-Use header")
+
+    allowed_status = {"BOOKED", "ARRIVED", "IN_ROOM", "COMPLETED", "CANCELED", "NO_SHOW"}
+    updates = []
+    params = {"id": appointment_id}
+
+    if "status" in payload:
+        new_status = str(payload["status"]).upper()
+        if new_status not in allowed_status:
+            raise HTTPException(status_code=422, detail="Invalid status")
+        updates.append("status = :status")
+        params["status"] = new_status
+
+    if "reason" in payload:
+        updates.append("reason = :reason")
+        params["reason"] = str(payload["reason"])
+
+    if "start_at" in payload:
+        updates.append("start_at = :start_at")
+        params["start_at"] = payload["start_at"]
+
+    if "end_at" in payload:
+        updates.append("end_at = :end_at")
+        params["end_at"] = payload["end_at"]
+
+    if not updates:
+        # Nothing to do—return 200 with no updates to keep UI simple
+        return {"ok": True, "updated": 0}
+
+    row = db.execute(
+        text(f"UPDATE appointments SET {', '.join(updates)} WHERE id=:id RETURNING id, status"),
+        params,
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+
+    db.commit()
+    return {"ok": True, "appointment": dict(row)}

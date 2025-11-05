@@ -102,3 +102,27 @@ async def signature_webhook(
 
     db.commit()
     return {"ok": True}
+
+# apps/api/app/routers/signature.py  (append to the bottom)
+
+@router.get("/v1/signature/requests/{request_id}")
+def get_signature_request(request_id: str, db=Depends(get_db)):
+    """
+    Poll the status of a signature request.
+    We consider the request SIGNED if a Consent document exists whose meta.request_id == request_id.
+    Otherwise it's PENDING. You can add FAIL states if you log failures separately.
+    """
+    row = db.execute(
+        text(
+            "SELECT (meta->>'appointment_id') AS appointment_id "
+            "FROM documents WHERE kind='Consent' AND (meta->>'request_id') = :rid "
+            "ORDER BY id DESC LIMIT 1"
+        ),
+        {"rid": request_id},
+    ).mappings().first()
+
+    if row:
+        return {"request_id": request_id, "status": "SIGNED", "appointment_id": int(row["appointment_id"])}
+
+    # simple mock: if nothing is signed yet, it's pending
+    return {"request_id": request_id, "status": "PENDING"}

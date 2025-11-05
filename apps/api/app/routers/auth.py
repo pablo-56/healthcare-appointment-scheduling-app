@@ -1,14 +1,15 @@
 import random
 import string
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, EmailStr
 
 from ..settings import settings
 from ..notifier import send_otp
 from ..utils.redis_cache import get_redis_client
 
-router = APIRouter()
+router = APIRouter(prefix="/v1/auth", tags=["auth"])
+
 r = get_redis_client()
 
 def _code(length: int = 6) -> str:
@@ -19,7 +20,7 @@ class OTPRequest(BaseModel):
     email: EmailStr | None = None
     phone: str | None = None
 
-@router.post("/v1/auth/otp:send")
+@router.post("/otp:send")
 def send_otp_endpoint(req: OTPRequest):
     """
     Dev: stores OTP in Redis as key otp:<dest>.
@@ -39,7 +40,14 @@ def send_otp_endpoint(req: OTPRequest):
         resp["dev_code"] = code  # DEV ONLY
     return resp
 
-@router.get("/v1/me")
-def me():
-    # Stub user info (Phase 0)
-    return {"sub": "demo-user@example.com"}
+@router.get("/me")
+def me(request: Request):
+    email = request.cookies.get("demo_email")
+    role  = request.cookies.get("demo_role")
+    if not email or not role:
+        return {"role": "ANON"}
+    return {
+        "email": email,
+        "role": role,  # "PATIENT" | "CLINICIAN" | "OPS"
+        # (optional) anything else your RoleGuard expects
+    }

@@ -1,5 +1,5 @@
 # apps/api/app/routers/tasks.py
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Path
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, Literal, List
 from sqlalchemy import text, bindparam
@@ -12,17 +12,9 @@ router = APIRouter(prefix="/v1", tags=["tasks"])
 
 class TaskCreate(BaseModel):
     type: Literal["care_escalation", "pro_reminder", "rpm_alert"]
-    payload: Dict[str, Any]                    # arbitrary JSON payload stored in payload_json
-    assignee: Optional[str] = None             # e.g., "nurse_queue"
-    status: Optional[Literal["open","in_progress","done","canceled"]] = "open"
-
-class TaskOut(BaseModel):
-    id: int
-    type: str
-    status: str
-    payload_json: Dict[str, Any]
+    payload: Dict[str, Any]
     assignee: Optional[str] = None
-    created_at: str
+    status: Optional[Literal["open","in_progress","done","canceled"]] = "open"
 
 @router.post("/tasks", dependencies=[Depends(require_pou({"OPERATIONS"}))])
 def create_task(body: TaskCreate, db=Depends(get_db)):
@@ -42,9 +34,11 @@ def list_tasks(
     type: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     assignee: Optional[str] = Query(None),
+    me: Optional[bool] = Query(False),                 # tolerated flag from UI
     limit: int = Query(50, ge=1, le=200),
+    before_id: Optional[int] = Query(None, description="Keyset pagination: return rows with id < before_id"),
     db=Depends(get_db),
-    pou=Depends(require_pou({"OPERATIONS"})),   # ops can list
+    pou=Depends(require_pou({"OPERATIONS"})),
 ):
     where = []
     params: Dict[str, Any] = {"limit": limit}
@@ -54,6 +48,8 @@ def list_tasks(
         where.append("status = :status"); params["status"] = status
     if assignee:
         where.append("assignee = :assignee"); params["assignee"] = assignee
+    if before_id:
+        where.append("id < :before_id"); params["before_id"] = before_id
 
     sql = "SELECT id, type, status, payload_json, assignee, created_at FROM tasks"
     if where:
@@ -62,3 +58,12 @@ def list_tasks(
 
     rows = db.execute(text(sql), params).mappings().all()
     return {"items": [dict(r) for r in rows]}
+
+
+@router.post("/tasks/{task_id}/complete", dependencies=[Depends(require_pou({"OPERATIONS"}))])
+def complete_task(task_id: int = Path(...), db=Depends(get_db)):
+    res = db.execute(text("UPDATE tasks SET status='done' WHERE id=:id RETURNING id"), {"id": task_id}).first()
+    if not res:
+        raise HTTPException(404, "Task not found")
+    db.commit()
+    return {"ok": True, "id": int(res[0])}

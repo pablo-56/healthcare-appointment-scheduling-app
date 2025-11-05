@@ -11,4 +11,4 @@ COPY main.py /code/main.py
 # container listens on 9000 (compose maps 9200:9000)
 EXPOSE 9000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "9000"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "9200"]

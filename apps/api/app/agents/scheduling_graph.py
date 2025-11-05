@@ -1,44 +1,50 @@
-# LangGraph-style, but intentionally lightweight: rule-based triage + slot fetch.
-from typing import TypedDict, List, Dict, Any
+import os
 import httpx
-from ..settings import settings
+from fastapi import HTTPException
 
-class SchedState(TypedDict, total=False):
-    reason: str
-    intent: str
-    slots: List[Dict[str, Any]]
+EHR = os.getenv("EHR_CONNECTOR_URL", "http://ehr-connector:8100")
 
-KEYWORDS_CLINICAL = {"physical", "checkup", "cough", "pain", "injury", "diabetes", "bp", "blood", "fever"}
-KEYWORDS_ADMIN = {"forms", "paperwork", "insurance", "admin", "note", "refill", "referral"}
+def fetch_slots() -> list[dict]:
+    """
+    Always return a list of slots: [{"id": "...","start":"...","end":"..."}].
+    Try uppercase then lowercase endpoint for resilience.
+    """
+    last_exc = None
+    for path in ("/fhir/Slot", "/fhir/slot"):
+        try:
+            r = httpx.get(f"{EHR}{path}", timeout=5.0)
+            if r.status_code == 404:
+                continue
+            r.raise_for_status()
+            data = r.json() or {}
+            entries = data.get("entry") or []
+            out = []
+            for e in entries:
+                res = (e or {}).get("resource") or {}
+                if res.get("resourceType") == "Slot" and str(res.get("status", "free")).lower() == "free":
+                    out.append({
+                        "id": res.get("id"),
+                        "start": res.get("start"),
+                        "end": res.get("end"),
+                    })
+            return out
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            continue
+    # Hard failure -> return empty; caller will raise a clean HTTP error
+    print(f"[scheduling] Slot endpoint unavailable: {last_exc or '404 Not Found'}")
+    return []
 
-def triage_intent(reason: str) -> str:
-    r = reason.lower()
-    if any(k in r for k in KEYWORDS_CLINICAL): return "clinical"
-    if any(k in r for k in KEYWORDS_ADMIN):    return "admin"
-    return "clinical"  # default safe
+# ... inside your orchestrator/run() logic:
+def run(reason: str) -> dict:
+    state: dict = {"reason": reason}
 
-def fetch_slots() -> List[Dict[str, Any]]:
-    # Pull mock Schedule & Slot from EHR connector; in prod you’d filter by provider/panel.
-    with httpx.Client(timeout=10) as client:
-        _ = client.get(f"{settings.ehr_base}/fhir/Schedule")
-        res = client.get(f"{settings.ehr_base}/fhir/Slot")
-        res.raise_for_status()
-        data = res.json()
-        entries = data.get("entry", []) if isinstance(data, dict) else []
-        slots = []
-        for e in entries:
-            resrc = e.get("resource", {})
-            if resrc.get("id") and resrc.get("start") and resrc.get("end"):
-                slots.append({
-                    "slot_id": resrc["id"],
-                    "start": resrc["start"],
-                    "end": resrc["end"],
-                })
-        return slots
+    slots = fetch_slots()          # <-- list, not dict
+    state["slots"] = slots
+    if not slots:
+        # Surface a 503 back to the router (no cryptic 500s)
+        raise HTTPException(status_code=503, detail="No free slots available from EHR connector")
 
-def run(reason: str) -> SchedState:
-    # This simulates a small graph: triage -> availability -> done
-    state: SchedState = {"reason": reason}
-    state["intent"] = triage_intent(reason)
-    state["slots"] = fetch_slots()
+    state["selected"] = slots[0]   # safe now
+    # ... rest of your logic that books Appointment using `state["selected"]` ...
     return state

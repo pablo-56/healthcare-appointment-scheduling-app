@@ -4,6 +4,8 @@ from __future__ import annotations
 from typing import Set, Optional
 from fastapi import Header, HTTPException, Request, status
 
+
+
 # --- DOC-ONLY header (shows up in OpenAPI) ---
 def doc_purpose_of_use(
     x_purpose_of_use: str = Header(

@@ -1,47 +1,35 @@
-// apps/web/src/pages/PortalSummary.tsx
 import { useEffect, useState } from "react";
-import { useParams, useSearchParams } from "react-router-dom";
+import { useParams, Link } from "react-router-dom";
+import { api } from "../lib/fetcher";
+import { usePoll } from "../lib/usePoll";
 
-export default function PortalSummaryPage() {
+export default function PortalSummary() {
   const { encounterId } = useParams();
-  const [params] = useSearchParams();
-  const token = params.get("token") || "";
-  const [err, setErr] = useState<string>("");
-  const [url, setUrl] = useState<string>("");
+  const [summary, setSummary] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    async function load() {
-      setErr("");
-      setUrl("");
-      try {
-        const res = await fetch(
-          `${import.meta.env.VITE_API_BASE}/v1/documents/discharge/${encounterId}?token=${encodeURIComponent(token)}`
-        );
-        if (!res.ok) {
-          const text = await res.text();
-          throw new Error(`HTTP ${res.status}: ${text}`);
-        }
-        const data = await res.json();
-        setUrl(data.url);
-      } catch (e: any) {
-        setErr(String(e.message || e));
-      }
+  async function load() {
+    try {
+      const data = await api(`/v1/encounters/${encounterId}/summary`);
+      setSummary(data);
+      setLoading(false);
+    } catch {
+      setLoading(true); // keep polling if not ready
     }
-    if (encounterId && token) load();
-  }, [encounterId, token]);
+  }
+  useEffect(() => { load(); }, [encounterId]);
+  usePoll(load, 3000, loading); // “We’re finishing your note”
+
+  if (loading) return <div className="p-6">Preparing your summary…</div>;
 
   return (
-    <div style={{ padding: 24 }}>
-      <h1>Discharge Summary</h1>
-      {err && <p style={{ color: "tomato" }}>Error: {err}</p>}
-      {!url && <p>Loading…</p>}
-      {url && (
-        <iframe
-          src={url}
-          style={{ width: "100%", height: "75vh", border: "1px solid #333", borderRadius: 8 }}
-          title="discharge"
-        />
-      )}
+    <div className="p-6">
+      <h2 className="text-xl font-semibold mb-3">Visit summary</h2>
+      <pre className="bg-black/20 p-3 rounded">{JSON.stringify(summary?.note, null, 2)}</pre>
+      <div className="mt-4 space-x-2">
+        <Link to="/portal/follow-up" className="border px-3 py-1">Follow-up</Link>
+        <Link to="/portal/tasks" className="border px-3 py-1">Tasks</Link>
+      </div>
     </div>
   );
 }

@@ -1,79 +1,84 @@
-// apps/web/src/pages/Prechart.tsx
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
+import { api } from "../lib/fetcher";
 
-const API = (import.meta as any).env.VITE_API_BASE || "http://localhost:8000";
-
-type Prechart = {
-  document_id: number;
-  url: string;
-  meta?: any;
-  created_at: string;
-};
-
+/**
+ * Clinician pre-chart view for a single appointment.
+ * - Loads the latest "Prechart" document for this appointment.
+ * - If not ready (404), shows "generating…" with a soft refresh button.
+ * - Button → Open Scribe (/provider/scribe/:appointmentId).
+ */
 export default function PrechartPage() {
-  const { appointmentId } = useParams<{ appointmentId: string }>();
-  const [data, setData] = useState<Prechart | null>(null);
-  const [err, setErr] = useState<string>("");
+  const { appointmentId } = useParams();
+  const aid = Number(appointmentId || 0);
+  const [doc, setDoc] = useState<any>(null);
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(true);
+  const nav = useNavigate();
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      if (!appointmentId) return;
-      setErr("");
-      setData(null);
-      try {
-        const r = await fetch(`${API}/v1/prechart/${appointmentId}`, {
-          headers: {
-            "X-Purpose-Of-Use": "OPERATIONS",
-            Accept: "application/json",
-          },
-        });
-
-        // Read as text first so we can show helpful error if backend returns HTML
-        const txt = await r.text();
-        if (!r.ok) {
-          throw new Error(`HTTP ${r.status}: ${txt.slice(0, 160)}`);
-        }
-
-        let j: any;
-        try {
-          j = JSON.parse(txt);
-        } catch {
-          throw new Error(`Backend returned non-JSON: ${txt.slice(0, 160)}`);
-        }
-
-        if (!cancelled) setData(j as Prechart);
-      } catch (e: any) {
-        if (!cancelled) setErr(e?.message ?? String(e));
-      }
+  async function load() {
+    setErr("");
+    setLoading(true);
+    try {
+      // Clinician workflow: PoU TREATMENT
+      const data = await api(`/v1/prechart/${aid}`, { method: "GET", pou: "TREATMENT" });
+      setDoc(data);
+    } catch (e: any) {
+      // 404 means "not ready yet"
+      setErr(e?.message || "Not ready");
+    } finally {
+      setLoading(false);
     }
+  }
 
-    load();
-    return () => {
-      cancelled = true;
-    };
-  }, [appointmentId]);
+  useEffect(() => { if (aid) load(); }, [aid]);
+
+  if (!aid) return <div className="p-6 text-red-600">Missing appointment id.</div>;
 
   return (
-    <div style={{ padding: 16 }}>
-      <h1>Prechart</h1>
-      {err && <div style={{ color: "crimson", marginBottom: 8 }}>Error: {err}</div>}
-      {!data ? (
-        <div>Loading…</div>
-      ) : (
-        <>
-          <div style={{ marginBottom: 12 }}>
-            <div><b>Document ID:</b> {data.document_id}</div>
-            <div><b>Created:</b> {new Date(data.created_at).toLocaleString()}</div>
+    <div className="p-6 space-y-4">
+      <h1 className="text-2xl font-semibold">Pre-chart (Appt #{aid})</h1>
+
+      {loading && <div>Loading…</div>}
+
+      {!loading && !doc && (
+        <div className="space-y-2">
+          <div className="text-gray-500">Prechart generating…</div>
+          <button onClick={load} className="border px-3 py-1">Refresh</button>
+          <div><Link className="underline" to="/">Home</Link></div>
+        </div>
+      )}
+
+      {doc && (
+        <div className="space-y-3">
+          {/* Many pre-charts render a data: URL or S3 URL. We show both link + meta. */}
+          <div className="text-sm">
+            <b>Created:</b> {doc.created_at}
           </div>
-          <iframe
-            title="Prechart Document"
-            src={data.url}
-            style={{ width: "100%", height: "80vh", border: "1px solid #ddd", borderRadius: 8 }}
-          />
-        </>
+          {doc.url && (
+            <div>
+              <a className="underline" href={doc.url} target="_blank" rel="noreferrer">
+                Open pre-chart document
+              </a>
+            </div>
+          )}
+          {doc.meta && (
+            <pre className="bg-black/10 p-3 rounded text-xs overflow-auto">
+              {JSON.stringify(doc.meta, null, 2)}
+            </pre>
+          )}
+
+          {/* Success → open Scribe */}
+          <div className="flex gap-2">
+            <button
+              onClick={() => nav(`/provider/scribe/${aid}`)}
+              className="border px-3 py-1"
+            >
+              Open Scribe
+            </button>
+            <Link to="/" className="underline">Home</Link>
+          </div>
+        </div>
       )}
     </div>
   );
